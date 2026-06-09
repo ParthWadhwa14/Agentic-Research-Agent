@@ -1,0 +1,83 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+textarea {
+  field-sizing: content;
+}
+
+.prose-chat {
+  font-size: 0.95rem;
+  line-height: 1.75;
+}
+
+.prose-chat h1,
+.prose-chat h2,
+.prose-chat h3 {
+  margin: 1rem 0 0.5rem;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.prose-chat h1 {
+  font-size: 1.45rem;
+}
+
+.prose-chat h2 {
+  font-size: 1.25rem;
+}
+
+.prose-chat h3 {
+  font-size: 1.08rem;
+}
+
+.prose-chat p {
+  margin: 0.55rem 0;
+}
+
+.prose-chat ul,
+.prose-chat ol {
+  margin: 0.55rem 0 0.55rem 1.25rem;
+}
+
+.prose-chat ul {
+  list-style: disc;
+}
+
+.prose-chat ol {
+  list-style: decimal;
+}
+
+.prose-chat li {
+  margin: 0.25rem 0;
+  padding-left: 0.2rem;
+}
+
+.prose-chat table {
+  margin: 1rem 0;
+  width: 100%;
+  border-collapse: collapse;
+  overflow: hidden;
+  border-radius: 0.75rem;
+  font-size: 0.875rem;
+}
+
+.prose-chat th,
+.prose-chat td {
+  border: 1px solid #d1d5db;
+  padding: 0.65rem;
+  text-align: left;
+}
+
+.prose-chat th {
+  background: #f3f4f6;
+  font-weight: 700;
+}
