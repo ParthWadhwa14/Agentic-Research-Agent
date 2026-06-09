@@ -1,5 +1,53 @@
-.env node_modules/
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+env/
+
+# FastAPI runtime files
+backend/uploads/
+backend/outputs/
+backend/__pycache__/
+
+# Node / Next.js
+node_modules/
+frontend/node_modules/
 .next/
+frontend/.next/
+out/
+frontend/out/
 dist/
 build/
-.env
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local caches / generated data
+.cache/
+*.sqlite
+*.sqlite3
+*.db
+*.pptx
+*.tmp
