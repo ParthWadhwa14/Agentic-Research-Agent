@@ -60,4 +60,11 @@ The UI accepts:
 - CSV/Excel: data analysis, statistics, charts
 
 Output type is inferred from the prompt. Ask for a PPT, Markdown, LaTeX, code, or a plain report directly in your message.
-If no report type is specified, the backend generates a `.txt` download by default.
+The app is a text-first agent: it can analyze uploaded images and find relevant web images, but it does not generate new synthetic images.
+PPT exports can use searched web images as supporting visuals when relevant.
+
+Do not commit `.env`. Use `.env.example` as the safe template.
+
+## Streaming Responses
+
+The frontend uses `/api/agent/stream` for live response updates. The backend sends status events, answer chunks, and a final event with artifacts.

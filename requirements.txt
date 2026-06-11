@@ -12,6 +12,8 @@ pypdf
 wikipedia
 python-pptx
 Pillow
+requests
+ddgs
 pandas
 numpy
 matplotlib

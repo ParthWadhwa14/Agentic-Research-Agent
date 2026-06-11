@@ -3,7 +3,7 @@
 import { FormEvent, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { AgentMode, Artifact, artifactUrl, runAgentRequest } from "../lib/api";
+import { AgentMode, Artifact, artifactUrl, runAgentStream } from "../lib/api";
 
 type ChatMessage = {
   role: "user" | "assistant";
@@ -19,6 +19,8 @@ export default function Home() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
+  const [copiedMessageIndex, setCopiedMessageIndex] = useState<number | null>(null);
+  const [streamStatus, setStreamStatus] = useState("");
 
   const recentMessages = useMemo(
     () => messages.slice(-8).map((message) => `${message.role}: ${message.content.slice(0, 1000)}`),
@@ -34,19 +36,41 @@ export default function Home() {
     setMessages((current) => [...current, { role: "user", content: userQuery }]);
     setQuery("");
     setError("");
+    setStreamStatus("");
     setIsLoading(true);
 
     try {
-      const response = await runAgentRequest({
-        query: userQuery,
-        mode,
-        files: attachedFiles,
-        recentMessages
-      });
-      setMessages((current) => [
-        ...current,
-        { role: "assistant", content: response.answer, artifacts: response.artifacts }
-      ]);
+      const assistantIndex = messages.length + 1;
+      setMessages((current) => [...current, { role: "assistant", content: "" }]);
+
+      await runAgentStream(
+        {
+          query: userQuery,
+          mode,
+          files: attachedFiles,
+          recentMessages
+        },
+        {
+          onStatus: setStreamStatus,
+          onChunk: (content) => {
+            setMessages((current) =>
+              current.map((message, index) =>
+                index === assistantIndex ? { ...message, content: `${message.content}${content}` } : message
+              )
+            );
+          },
+          onFinal: (response) => {
+            setMessages((current) =>
+              current.map((message, index) =>
+                index === assistantIndex
+                  ? { ...message, content: response.answer, artifacts: response.artifacts }
+                  : message
+              )
+            );
+          },
+          onError: (message) => setError(message)
+        }
+      );
       setFiles([]);
       if (fileInputRef.current) fileInputRef.current.value = "";
     } catch (requestError) {
@@ -54,6 +78,7 @@ export default function Home() {
       setError(message);
     } finally {
       setIsLoading(false);
+      setStreamStatus("");
     }
   }
 
@@ -90,9 +115,18 @@ export default function Home() {
         ) : (
           <div className="flex-1 space-y-6 py-8">
             {messages.map((message, index) => (
-              <MessageBubble key={index} message={message} />
+              <MessageBubble
+                key={index}
+                message={message}
+                copied={copiedMessageIndex === index}
+                onCopy={async () => {
+                  await navigator.clipboard.writeText(message.content);
+                  setCopiedMessageIndex(index);
+                  window.setTimeout(() => setCopiedMessageIndex(null), 1500);
+                }}
+              />
             ))}
-            {isLoading && <AssistantTyping />}
+            {isLoading && <AssistantTyping status={streamStatus} />}
             {error && <div className="rounded-xl bg-red-50 p-3 text-sm text-red-700">{error}</div>}
           </div>
         )}
@@ -156,7 +190,15 @@ export default function Home() {
   );
 }
 
-function MessageBubble({ message }: { message: ChatMessage }) {
+function MessageBubble({
+  message,
+  copied,
+  onCopy
+}: {
+  message: ChatMessage;
+  copied: boolean;
+  onCopy: () => Promise<void>;
+}) {
   const isUser = message.role === "user";
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
@@ -165,20 +207,55 @@ function MessageBubble({ message }: { message: ChatMessage }) {
         {message.artifacts && message.artifacts.length > 0 && (
           <div className="mt-3 flex flex-wrap gap-2">
             {message.artifacts.map((artifact) => (
-              <a
-                key={artifact.url}
-                href={artifactUrl(artifact.url)}
-                target="_blank"
-                rel="noreferrer"
-                className="rounded-full border border-gray-300 bg-white px-3 py-1 text-xs font-medium text-gray-900 hover:bg-gray-100"
-              >
-                Download {artifact.type.toUpperCase()}
-              </a>
+              <ArtifactView key={artifact.url} artifact={artifact} />
             ))}
+          </div>
+        )}
+        {!isUser && (
+          <div className="mt-3">
+            <button
+              type="button"
+              onClick={onCopy}
+              className="rounded-full border border-gray-300 bg-white px-3 py-1 text-xs font-medium text-gray-700 shadow-sm hover:bg-gray-100"
+            >
+              {copied ? "Copied" : "Copy"}
+            </button>
           </div>
         )}
       </div>
     </div>
+  );
+}
+
+function ArtifactView({ artifact }: { artifact: Artifact }) {
+  const url = artifactUrl(artifact.url);
+  const isImage = ["jpg", "jpeg", "png", "webp"].includes(artifact.type.toLowerCase());
+
+  if (isImage) {
+    return (
+      <div className="w-full space-y-2">
+        <img src={url} alt={artifact.name} className="max-h-[420px] rounded-2xl border border-gray-200 shadow-sm" />
+        <a
+          href={url}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex rounded-full border border-gray-300 bg-white px-3 py-1 text-xs font-medium text-gray-900 hover:bg-gray-100"
+        >
+          Download {artifact.type.toUpperCase()}
+        </a>
+      </div>
+    );
+  }
+
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noreferrer"
+      className="rounded-full border border-gray-300 bg-white px-3 py-1 text-xs font-medium text-gray-900 hover:bg-gray-100"
+    >
+      Download {artifact.type.toUpperCase()}
+    </a>
   );
 }
 
@@ -213,10 +290,10 @@ function MarkdownMessage({ content }: { content: string }) {
   );
 }
 
-function AssistantTyping() {
+function AssistantTyping({ status }: { status: string }) {
   return (
     <div className="flex justify-start">
-      <div className="rounded-3xl bg-transparent px-4 py-3 text-sm text-gray-500">Thinking...</div>
+      <div className="rounded-3xl bg-transparent px-4 py-3 text-sm text-gray-500">{status || "Thinking..."}</div>
     </div>
   );
 }

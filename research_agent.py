@@ -1,11 +1,14 @@
 import base64
+import io
 import json
 import mimetypes
 import operator
 import os
 import re
 import tempfile
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 from typing import Annotated, Any, Dict, List, Optional, Sequence, TypedDict, Union
 
 from dotenv import load_dotenv
@@ -17,6 +20,7 @@ from langchain_community.tools import WikipediaQueryRun
 from langgraph.graph import END, START, StateGraph
 
 from memory_system import ContextBuilder, InMemoryMemoryStore, MemoryRecord, MemoryStore
+from media_search import collect_slide_images
 
 load_dotenv()
 
@@ -51,6 +55,19 @@ IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}
 DATA_EXTENSIONS = {".csv", ".xlsx", ".xls"}
 
 default_memory_store = InMemoryMemoryStore()
+
+
+def build_current_datetime_context() -> str:
+    """Provides a reliable clock anchor for relative dates in research mode."""
+    local_time = datetime.now().astimezone()
+    utc_time = datetime.now(ZoneInfo("UTC"))
+    india_time = datetime.now(ZoneInfo("Asia/Kolkata"))
+    return "\n".join([
+        f"Current server time: {local_time.strftime('%Y-%m-%d %I:%M %p %Z')}",
+        f"Current UTC time: {utc_time.strftime('%Y-%m-%d %H:%M:%S %Z')}",
+        f"Current India time: {india_time.strftime('%Y-%m-%d %I:%M %p %Z')} (Asia/Kolkata)",
+        f"Current year: {india_time.year}",
+    ])
 
 
 def clean_text(value: Any, max_chars: int = 700) -> str:
@@ -154,14 +171,34 @@ def encode_image(image_path: str) -> str:
         return base64.b64encode(image_file.read()).decode("utf-8")
 
 
+def prepare_image_data_url(image_path: str, max_side: int = 1600, jpeg_quality: int = 85) -> str:
+    """Builds a vision-model-compatible image data URL, resizing if Pillow is available."""
+    mime_type = mimetypes.guess_type(image_path)[0] or "image/jpeg"
+    try:
+        from PIL import Image
+
+        with Image.open(image_path) as image:
+            image = image.convert("RGB")
+            image.thumbnail((max_side, max_side))
+            buffer = io.BytesIO()
+            image.save(buffer, format="JPEG", quality=jpeg_quality, optimize=True)
+            encoded = base64.b64encode(buffer.getvalue()).decode("utf-8")
+            return f"data:image/jpeg;base64,{encoded}"
+    except Exception:
+        return f"data:{mime_type};base64,{encode_image(image_path)}"
+
+
 def analyze_image(image_path: str) -> str:
     """Uses the vision model to summarize visual evidence and OCR text."""
     if not os.path.exists(image_path):
         return f"[Image missing: {image_path}]"
 
-    mime_type = mimetypes.guess_type(image_path)[0] or "image/jpeg"
+    image_size = os.path.getsize(image_path)
+    image_mime = mimetypes.guess_type(image_path)[0] or "unknown"
     prompt = (
-        "Analyze this image for a research report. Return: overall description, "
+        f"Analyze this uploaded image for a research report.\n"
+        f"Upload metadata: MIME/type={image_mime}; size={image_size} bytes.\n"
+        "Return: overall description, "
         "important visible objects/data, exact OCR text, chart/table interpretation if present, "
         "and any limitations or uncertainty."
     )
@@ -170,7 +207,7 @@ def analyze_image(image_path: str) -> str:
             {"type": "text", "text": prompt},
             {
                 "type": "image_url",
-                "image_url": {"url": f"data:{mime_type};base64,{encode_image(image_path)}"},
+                "image_url": {"url": prepare_image_data_url(image_path)},
             },
         ]
     )
@@ -278,31 +315,92 @@ def analyze_data_file(file_path: str, output_dir: Optional[str] = None) -> Dict[
         return result
 
 
+def _extract_json_array(text: str) -> Optional[List[Any]]:
+    """Extracts the first top-level JSON array from an LLM response."""
+    cleaned = text.replace("```json", "").replace("```", "").strip()
+    try:
+        parsed = json.loads(cleaned)
+        return parsed if isinstance(parsed, list) else None
+    except json.JSONDecodeError:
+        pass
+
+    start = cleaned.find("[")
+    end = cleaned.rfind("]")
+    if start == -1 or end == -1 or end <= start:
+        return None
+    try:
+        parsed = json.loads(cleaned[start:end + 1])
+        return parsed if isinstance(parsed, list) else None
+    except json.JSONDecodeError:
+        return None
+
+
+def _clean_slide_text(text: Any, max_chars: int = 180) -> str:
+    text = re.sub(r"\s+", " ", str(text or "")).strip(" -•*\t")
+    text = re.sub(r"^\[(?:source|citation|reference)\]\s*", "", text, flags=re.IGNORECASE)
+    return text[:max_chars].rstrip()
+
+
+def _dedupe_preserve_order(items: Sequence[str]) -> List[str]:
+    seen = set()
+    deduped = []
+    for item in items:
+        key = re.sub(r"\W+", "", item.lower())
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
+def _derive_deck_title(query: str, report: str) -> str:
+    for line in report.splitlines():
+        title = re.sub(r"^#{1,6}\s*", "", line).strip()
+        if 12 <= len(title) <= 110 and not title.lower().startswith(("executive summary", "direct answer")):
+            return title
+    return query[:110] or "Research Presentation"
+
+
+def _extract_references(report: str, max_items: int = 6) -> List[str]:
+    references = []
+    url_pattern = re.compile(r"https?://[^\s)\]]+")
+    for line in report.splitlines():
+        if url_pattern.search(line) or re.match(r"^\s*(?:[-*]|\d+\.)?\s*(?:references?|sources?)\b", line, re.IGNORECASE):
+            clean_line = _clean_slide_text(line, 220)
+            if clean_line and not clean_line.lower() in {"references", "sources"}:
+                references.append(clean_line)
+    return _dedupe_preserve_order(references)[:max_items]
+
+
 def presentation_planner_agent(report: str, query: str) -> List[Dict[str, Any]]:
-    """Plans a dynamic slide deck from the report instead of forcing a fixed slide count."""
+    """Plans a dynamic slide deck from either a chat answer or a research report."""
     recommended_sections = [
-        "Title",
-        "Problem Statement",
-        "Research Method",
+        "Opening",
+        "Context",
+        "Method",
         "Key Findings",
-        "Market/Data Analysis",
+        "Evidence",
         "Comparison",
         "Risks",
         "Recommendations",
-        "Conclusion",
+        "Next Steps",
         "References",
     ]
     prompt = f"""
     You are a senior presentation strategist.
-    Convert the report into a boardroom-quality slide deck. Do NOT force a fixed slide count.
+    Convert the source material into a boardroom-quality slide deck for the user's request.
 
     Goal:
     - Create a clear narrative arc, not a copied report.
-    - Use strong slide titles that communicate the insight.
+    - Use strong slide titles that communicate the insight, not generic labels.
+    - Produce 6-10 slides unless the material is genuinely tiny.
     - Prefer 3-5 short, punchy bullets per content slide.
+    - Keep each bullet under 18 words.
     - Add one "takeaway" per important slide.
-    - Add speaker notes with useful context, not repeated bullets.
+    - Add speaker notes with useful context, evidence, caveats, and transitions; do not just repeat bullets.
     - Split dense topics and merge weak/repetitive sections.
+    - Include a recommendations or next-steps slide when the query asks for decisions, strategy, comparison, or advice.
+    - Include a references slide if source URLs or citations exist.
     - Include charts/images only when they improve understanding.
 
     Recommended sections to consider, not mandatory and not fixed:
@@ -313,6 +411,7 @@ def presentation_planner_agent(report: str, query: str) -> List[Dict[str, Any]]:
       {{
         "title": "Slide title",
         "section": "short section label",
+        "slide_type": "title | agenda | insight | comparison | data | recommendation | risk | reference",
         "takeaway": "one sentence key takeaway",
         "bullets": ["short bullet", "short bullet"],
         "visual": "none | chart | image",
@@ -328,85 +427,138 @@ def presentation_planner_agent(report: str, query: str) -> List[Dict[str, Any]]:
     """
     try:
         response = llm.invoke([HumanMessage(content=prompt)]).content.strip()
-        clean_json = response.replace("```json", "").replace("```", "").strip()
-        parsed = json.loads(clean_json)
+        parsed = _extract_json_array(response)
         if isinstance(parsed, list):
             slides = []
             for item in parsed:
                 if not isinstance(item, dict):
                     continue
-                title = str(item.get("title", "")).strip()
-                bullets = item.get("bullets", [])
+                title = _clean_slide_text(item.get("title", ""), 95)
+                bullets = _normalize_slide_bullets(item.get("bullets", []))
                 visual = str(item.get("visual", "none")).strip().lower()
                 if title:
                     slides.append({
                         "title": title,
-                        "section": str(item.get("section", "Insight")).strip() or "Insight",
-                        "takeaway": str(item.get("takeaway", "")).strip(),
-                        "bullets": bullets if isinstance(bullets, list) else [str(bullets)],
+                        "section": _clean_slide_text(item.get("section", "Insight"), 32) or "Insight",
+                        "slide_type": _clean_slide_text(item.get("slide_type", "insight"), 24).lower() or "insight",
+                        "takeaway": _clean_slide_text(item.get("takeaway", ""), 190),
+                        "bullets": bullets[:5],
                         "visual": visual if visual in {"chart", "image"} else "none",
-                        "speaker_notes": str(item.get("speaker_notes", "")).strip(),
+                        "speaker_notes": _clean_slide_text(item.get("speaker_notes", ""), 1200),
                     })
             if slides:
-                return slides
+                return _polish_slide_plan(slides, query, report)
     except Exception:
         pass
 
-    fallback_titles = [
-        "Overview",
-        "Research Context",
-        "Key Findings",
-        "Analysis",
-        "Recommendations",
-        "Conclusion",
-    ]
-    chunks = [chunk.strip() for chunk in re.split(r"\n#{1,3}\s+", report) if chunk.strip()]
-    slides = []
-    for index, chunk in enumerate(chunks[:8] or [report[:1200]]):
-        title = fallback_titles[index] if index < len(fallback_titles) else f"Supporting Detail {index + 1}"
-        bullets = [line.strip(" -•\t") for line in chunk.splitlines() if line.strip(" -•\t")]
-        takeaway = bullets[0] if bullets else chunk[:180]
-        slides.append({
+    return _polish_slide_plan(_section_slides_from_report(report), query, report)
+
+
+def _polish_slide_plan(slides: List[Dict[str, Any]], query: str, report: str, max_slides: int = 11) -> List[Dict[str, Any]]:
+    """Normalizes LLM/fallback slide plans into a complete, presentable deck."""
+    cleaned_slides: List[Dict[str, Any]] = []
+    for slide in slides:
+        title = _clean_slide_text(slide.get("title", ""), 95)
+        if not title or title.lower() in {"title", "overview"}:
+            continue
+        bullets = _dedupe_preserve_order(_normalize_slide_bullets(slide.get("bullets", [])))[:5]
+        if not bullets and slide.get("takeaway"):
+            bullets = [_clean_slide_text(slide["takeaway"], 160)]
+        cleaned_slides.append({
             "title": title,
+            "section": _clean_slide_text(slide.get("section", "Insight"), 32) or "Insight",
+            "slide_type": _clean_slide_text(slide.get("slide_type", "insight"), 24).lower() or "insight",
+            "takeaway": _clean_slide_text(slide.get("takeaway", ""), 190),
+            "bullets": bullets[:5] or ["See speaker notes for supporting detail."],
+            "visual": slide.get("visual", "none") if slide.get("visual") in {"chart", "image"} else "none",
+            "speaker_notes": _clean_slide_text(slide.get("speaker_notes", ""), 1200),
+        })
+
+    if not cleaned_slides:
+        cleaned_slides = [{
+            "title": _derive_deck_title(query, report),
+            "section": "Overview",
+            "slide_type": "insight",
+            "takeaway": _clean_slide_text(report, 180),
+            "bullets": _normalize_slide_bullets(report)[:5] or [_clean_slide_text(report, 160)],
+            "visual": "none",
+            "speaker_notes": _clean_slide_text(report, 900),
+        }]
+
+    needs_agenda = len(cleaned_slides) >= 4 and cleaned_slides[0].get("slide_type") != "agenda"
+    if needs_agenda:
+        agenda_items = _dedupe_preserve_order([slide["section"] for slide in cleaned_slides])[:5]
+        cleaned_slides.insert(0, {
+            "title": "Today’s Narrative",
+            "section": "Opening",
+            "slide_type": "agenda",
+            "takeaway": "The deck moves from context to evidence to action.",
+            "bullets": agenda_items or ["Context", "Findings", "Recommendations"],
+            "visual": "none",
+            "speaker_notes": "Use this slide to preview the story arc and set expectations for the audience.",
+        })
+
+    references = _extract_references(report)
+    has_reference_slide = any(slide.get("slide_type") == "reference" or "reference" in slide["title"].lower() for slide in cleaned_slides)
+    if references and not has_reference_slide:
+        cleaned_slides.append({
+            "title": "Selected Sources",
+            "section": "References",
+            "slide_type": "reference",
+            "takeaway": "Claims should be checked against the linked source material.",
+            "bullets": references,
+            "visual": "none",
+            "speaker_notes": "These are the highest-signal references detected in the generated report.",
+        })
+
+    return cleaned_slides[:max_slides]
+
+
+def _section_slides_from_report(report: str, max_slides: int = 10) -> List[Dict[str, Any]]:
+    """Fallback parser that creates usable slides from Markdown/plain text sections."""
+    fallback_titles = [
+        "Executive Snapshot",
+        "Context That Matters",
+        "Most Important Findings",
+        "Evidence And Analysis",
+        "Risks And Unknowns",
+        "Recommended Actions",
+        "Closing Takeaway",
+    ]
+    chunks = [chunk.strip() for chunk in re.split(r"\n(?=#{1,3}\s+|\d+\.\s+|Slide\s+\d+[:.)-])", report) if chunk.strip()]
+    slides = []
+    for index, chunk in enumerate(chunks[:max_slides] or [report[:1400]]):
+        lines = [line.strip() for line in chunk.splitlines() if line.strip()]
+        raw_title = re.sub(r"^(#{1,6}\s+|\d+\.\s+|Slide\s+\d+[:.)-]\s*)", "", lines[0] if lines else "").strip()
+        title = raw_title if 8 <= len(raw_title) <= 95 else fallback_titles[index] if index < len(fallback_titles) else f"Supporting Detail {index + 1}"
+        bullets = []
+        for line in lines[1:]:
+            stripped = _clean_slide_text(line, 170)
+            if stripped and not stripped.startswith("#") and not re.match(r"^https?://", stripped):
+                bullets.append(stripped)
+        if not bullets:
+            words = " ".join(lines[1:] or lines[:1]).split()
+            bullets = [" ".join(words[item:item + 16]) for item in range(0, min(len(words), 80), 16)]
+        takeaway = bullets[0] if bullets else _clean_slide_text(chunk, 180)
+        slides.append({
+            "title": title[:95],
             "section": "Summary",
+            "slide_type": "insight",
             "takeaway": takeaway[:180],
             "bullets": bullets[:5] or [chunk[:240]],
             "visual": "none",
-            "speaker_notes": chunk[:700],
+            "speaker_notes": _clean_slide_text(chunk, 900),
         })
     return slides
 
 
 def _normalize_slide_bullets(content: Any) -> List[str]:
     if isinstance(content, list):
-        return [re.sub(r"\s+", " ", str(item).strip(" -•\t")) for item in content if str(item).strip(" -•\t")]
+        return [_clean_slide_text(item, 175) for item in content if _clean_slide_text(item, 175)]
     if isinstance(content, str):
-        return [re.sub(r"\s+", " ", item.strip(" -•\t")) for item in re.split(r"\n|- |\* ", content) if item.strip(" -•\t")]
-    return [str(content).strip()] if content else []
-
-
-def _section_slides_from_report(report: str, max_slides: int = 12) -> List[Dict[str, Any]]:
-    sections = re.split(r"\n(?=#{1,3}\s+|\d+\.\s+|Slide\s+\d+[:.)-])", report)
-    slides: List[Dict[str, Any]] = []
-    for section in sections:
-        clean_section = section.strip()
-        if not clean_section:
-            continue
-        lines = [line.strip() for line in clean_section.splitlines() if line.strip()]
-        raw_title = lines[0] if lines else "Slide"
-        title = re.sub(r"^(#{1,3}\s+|\d+\.\s+|Slide\s+\d+[:.)-]\s*)", "", raw_title).strip()
-        bullets = []
-        for line in lines[1:]:
-            stripped = line.strip(" -•*\t")
-            if stripped and not stripped.startswith("#"):
-                bullets.append(stripped)
-        if not bullets:
-            words = " ".join(lines[1:] or lines[:1]).split()
-            bullets = [" ".join(words[index:index + 22]) for index in range(0, min(len(words), 110), 22)]
-        slides.append({"title": title[:80] or "Key Point", "bullets": bullets[:5], "visual": "none"})
-        if len(slides) >= max_slides:
-            break
-    return slides
+        parts = re.split(r"\n+|(?:^|\s)[-*•]\s+", content)
+        return [_clean_slide_text(item, 175) for item in parts if _clean_slide_text(item, 175)]
+    return [_clean_slide_text(content, 175)] if content else []
 
 
 def generate_ppt_from_report(
@@ -429,11 +581,12 @@ def generate_ppt_from_report(
     prs.slide_width = Inches(13.333)
     prs.slide_height = Inches(7.5)
     slides = presentation_planner_agent(report, query)
-    section_slides = _section_slides_from_report(report)
+    section_slides = _polish_slide_plan(_section_slides_from_report(report), query, report)
     if len(slides) < min(5, len(section_slides)) and len(report) > 1200:
         slides = section_slides
     chart_paths = list(chart_paths or [])
     chart_index = 0
+    deck_title = _derive_deck_title(query, report)
 
     navy = RGBColor(15, 23, 42)
     slate = RGBColor(51, 65, 85)
@@ -534,9 +687,10 @@ def generate_ppt_from_report(
     orb2.fill.fore_color.rgb = cyan
     orb2.line.fill.background()
     add_textbox(title_slide, "RESEARCH BRIEFING", 0.9, 1.25, 4.1, 0.35, 11, cyan, bold=True)
-    add_textbox(title_slide, query[:120] or "Research Presentation", 0.88, 2.05, 10.4, 1.55, 38, white, bold=True)
-    add_textbox(title_slide, f"{len(slides)} insight slides · generated deck", 0.92, 3.82, 8.6, 0.42, 16, RGBColor(203, 213, 225))
+    add_textbox(title_slide, deck_title[:120], 0.88, 2.05, 10.4, 1.55, 38, white, bold=True)
+    add_textbox(title_slide, f"{len(slides)} slides · generated from: {query[:90]}", 0.92, 3.82, 8.6, 0.55, 15, RGBColor(203, 213, 225))
     add_textbox(title_slide, "Prepared by Research Agentic Chatbot", 0.92, 6.72, 5.6, 0.3, 10, RGBColor(148, 163, 184))
+    add_notes(title_slide, f"Deck generated for the request: {query}\n\nUse this opening to frame the audience, objective, and expected decision.")
 
     for slide_number, slide_plan in enumerate(slides, start=1):
         title = str(slide_plan.get("title", "")).strip()
@@ -547,7 +701,7 @@ def generate_ppt_from_report(
         add_brand_frame(slide, slide_number, section)
         add_textbox(slide, title[:95], 0.72, 0.86, 11.4, 0.72, 27, navy, bold=True)
 
-        wants_chart = slide_plan.get("visual") == "chart" or any(
+        wants_chart = slide_plan.get("visual") in {"chart", "image"} or any(
             keyword in title.lower()
             for keyword in ["data", "market", "analysis", "trend", "correlation", "comparison"]
         )
@@ -555,6 +709,7 @@ def generate_ppt_from_report(
         bullets = _normalize_slide_bullets(slide_plan.get("bullets", []))[:5] or ["See generated report for details."]
         takeaway = str(slide_plan.get("takeaway", "")).strip()
         speaker_notes = str(slide_plan.get("speaker_notes", "")).strip()
+        slide_type = str(slide_plan.get("slide_type", "insight")).lower()
         if not speaker_notes:
             speaker_notes = f"{title}\n\n" + "\n".join(f"- {bullet}" for bullet in bullets)
 
@@ -566,22 +721,29 @@ def generate_ppt_from_report(
         body = body_box.text_frame
         body.clear()
         body.word_wrap = True
+        body.margin_left = Inches(0.03)
+        body.margin_right = Inches(0.03)
+
+        bullet_font_size = 13 if slide_type == "reference" else 15 if len(bullets) >= 5 else 17
+        bullet_space = 7 if slide_type == "reference" else 10 if len(bullets) >= 5 else 12
 
         for bullet_index, bullet in enumerate(bullets):
             paragraph = body.paragraphs[0] if bullet_index == 0 else body.add_paragraph()
             paragraph.text = bullet[:185]
             paragraph.level = 0
-            paragraph.font.size = Pt(17)
+            paragraph.font.size = Pt(bullet_font_size)
             paragraph.font.color.rgb = slate
-            paragraph.space_after = Pt(12)
+            paragraph.space_after = Pt(bullet_space)
             paragraph.line_spacing = 1.08
 
-        if takeaway:
+        if takeaway and slide_type != "reference":
             callout = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(0.82), Inches(6.12), Inches(11.35), Inches(0.62))
             callout.fill.solid()
             callout.fill.fore_color.rgb = RGBColor(255, 251, 235)
             callout.line.color.rgb = RGBColor(253, 230, 138)
             add_textbox(slide, f"Key takeaway: {takeaway[:170]}", 1.05, 6.27, 10.8, 0.27, 12, RGBColor(120, 53, 15), bold=True)
+        elif slide_type == "reference":
+            add_textbox(slide, "Source list captured from the generated report. Verify important claims before publication.", 0.92, 6.21, 10.95, 0.38, 11, muted)
 
         if has_chart:
             image_path = chart_paths[chart_index]
@@ -641,14 +803,22 @@ def planner_node(state: ResearchState) -> Dict[str, Any]:
     """Creates a comprehensive, step-by-step research plan."""
     print("--- 📝 CREATING RESEARCH PLAN ---")
     prompt = f"""
-    Create a step-by-step research plan to answer this query comprehensively: '{state['query']}'.
+    Create a rigorous deep-research plan to answer this query comprehensively: '{state['query']}'.
+    Resolve relative dates against this current time context:
+    {build_current_datetime_context()}
+
     Use this compact memory/context only if relevant:
     {state.get('memory_context', '')}
 
     Account for this user-provided file/tool context if present:
     {state.get('input_context', '')}
 
-    Include whether the answer needs math solving, data analysis, citation gathering, limitations, recommendations, and presentation-ready structure.
+    Requirements:
+    - Search across official sources, primary sources, reputable news/research sites, and high-signal secondary sources.
+    - Identify what quantitative data, calculations, comparisons, timelines, prices, market sizes, scores, schedules, or estimates are needed.
+    - Plan at least one numerical/analytical pass whenever the topic has measurable facts.
+    - Include cross-verification, contradictions to check, citation gathering, limitations, recommendations, and presentation-ready structure.
+    - Prefer exact dates, units, currencies, assumptions, and source URLs over vague claims.
     Output only the plan.
     """
     response = llm.invoke([HumanMessage(content=prompt)])
@@ -662,11 +832,20 @@ def search_and_summarize_node(state: ResearchState) -> Dict[str, Any]:
     search_target = state["current_gaps"] if state["iteration"] > 0 else state["plan"]
     routing_prompt = f"""
     You are an expert research librarian. Look at the current research target: '{search_target}'.
-    Generate up to 4 highly specific search queries to gather this information.
+    Current time context:
+    {build_current_datetime_context()}
+
+    Generate up to 6 highly specific search queries to gather this information.
 
     For each query, choose the best source:
     - "wiki": For established facts, history, core concepts, and mathematical formulas.
-    - "web": For recent news, live data, specific papers, and niche coding implementations.
+    - "web": For recent news, live data, official pages, specific papers, schedules, prices, datasets, and niche implementations.
+
+    Query design rules:
+    - Include official-source searches where applicable.
+    - Include one query for quantitative data/calculations if the topic has numbers.
+    - Include one query for criticism/risks/limitations.
+    - Include current year/date terms for time-sensitive topics.
 
     Output EXACTLY a JSON array of dictionaries, nothing else.
     Format: [{{"source": "wiki", "query": "Transformer neural network"}}, {{"source": "web", "query": "State Space Models latest papers 2024"}}]
@@ -694,8 +873,14 @@ def search_and_summarize_node(state: ResearchState) -> Dict[str, Any]:
             raw_results += f"\n[Search failed for '{query_text}']: {exc}"
 
     summary_prompt = f"""
-    You are an expert data extractor. Extract factual data, citations/source names, math formulas, tables, risks, limitations, recommendations, and code snippets from these raw search results.
-    Ignore conversational fluff. Preserve mathematical notation and citation details.
+    You are an expert research analyst and data extractor.
+    Extract:
+    - Key factual claims with source names and URLs.
+    - Exact dates, prices, quantities, units, formulas, tables, and comparable data.
+    - Any calculations that can be performed from the retrieved numbers; show assumptions and arithmetic.
+    - Contradictions, uncertainty, missing data, risks, limitations, and recommendations.
+    - Useful code snippets or reproducible analysis steps only if relevant.
+    Ignore conversational fluff. Preserve mathematical notation, currency, units, and citation details.
 
     Raw Results:
     {raw_results}
@@ -711,17 +896,20 @@ def verification_node(state: ResearchState) -> Dict[str, Any]:
     """Cross-verifies claims, checks math/code, and identifies gaps."""
     print("--- ⚖️ VERIFYING DATA & CHECKING GAPS ---")
     prompt = f"""
-    You are a rigorous academic reviewer. Evaluate the accumulated research against the original query.
+    You are a rigorous academic reviewer and fact-checker. Evaluate the accumulated research against the original query.
     Original Query: {state['query']}
+    Current time context:
+    {build_current_datetime_context()}
 
     Accumulated Research:
     {state['research_data']}
 
     Tasks:
-    1. Cross-verify claims for contradictions.
-    2. Check mathematical calculations, data-analysis claims, and code snippets for errors.
+    1. Cross-verify claims for contradictions and stale information.
+    2. Check mathematical calculations, dates, prices, schedules, data-analysis claims, and code snippets for errors.
     3. Identify missing information required to fully answer the query.
-    4. Check that citations, tables, limitations, and recommendations are available where needed.
+    4. Check that citations, source URLs, tables, limitations, assumptions, and recommendations are available where needed.
+    5. Demand another search if the answer lacks official/current sources for time-sensitive topics.
 
     If the data is complete and accurate, output exactly: COMPLETE.
     If there are errors or missing data, output a detailed list of the gaps that need to be researched next.
@@ -736,8 +924,17 @@ def format_agent_node(state: ResearchState) -> Dict[str, Any]:
 
     output_format = "markdown" if state["format_preference"].lower() == "pptx" else state["format_preference"]
     system_instruction = f"""
-    You are a professional report generator. Create a polished research report from verified research.
-    Required report tasks: organize findings, write an executive summary, add citations, add tables where useful, add limitations, add recommendations, and include references.
+    You are a professional deep-research report generator. Create an excellent, polished, evidence-backed report from verified research.
+    Resolve all relative dates against this current time context:
+    {build_current_datetime_context()}
+
+    Required report tasks:
+    - Start with a direct answer and executive summary.
+    - Organize findings with clear headings.
+    - Include calculations/quantitative analysis where applicable, showing assumptions and arithmetic.
+    - Add comparison tables, timelines, price/schedule tables, or evidence matrices where useful.
+    - Cite source names and URLs inline for important claims.
+    - Add limitations, contradictions, confidence level, recommendations, and references.
     You MUST output the final report entirely in this format: {output_format}
 
     Rules for LaTeX: provide a full compilable document and wrap math correctly.
@@ -763,11 +960,21 @@ def ppt_export_node(state: ResearchState) -> Dict[str, Any]:
 
     print("--- 📊 EXPORTING POWERPOINT ---")
     pptx_path = state.get("pptx_path") or "research_presentation.pptx"
+    visual_paths = list(state.get("chart_paths", []))
+    if len(visual_paths) < 3:
+        media_dir = Path(pptx_path).parent
+        searched_images = collect_slide_images(
+            state["query"],
+            output_dir=media_dir,
+            plan=state.get("plan"),
+            max_images=4 - len(visual_paths),
+        )
+        visual_paths.extend(searched_images)
     exported_path = generate_ppt_from_report(
         report=state["final_report"],
         query=state["query"],
         output_path=pptx_path,
-        chart_paths=state.get("chart_paths", []),
+        chart_paths=visual_paths,
     )
     return {"pptx_path": exported_path, "final_report": f"PowerPoint generated: {exported_path}\n\nSource report:\n\n{state['final_report']}"}
 
@@ -777,7 +984,7 @@ def ppt_export_node(state: ResearchState) -> Dict[str, Any]:
 # ==========================================
 def should_continue_research(state: ResearchState) -> str:
     """Decides whether to loop back to search or proceed to formatting."""
-    if state["iteration"] >= 3:
+    if state["iteration"] >= 4:
         print("--- 🛑 ITERATION CAP REACHED: Proceeding to format ---")
         return "format"
 

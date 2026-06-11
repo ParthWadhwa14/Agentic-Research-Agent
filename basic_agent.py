@@ -1,180 +1,4 @@
-# import langchain 
-# import langgraph 
-# from typing import List, Dict, Any, Optional, Union, TypedDict, Sequence, Annotated
-# import operator 
-# from langchain_core.messages import  BaseMessage, ChatMessage, SystemMessage, HumanMessage, AIMessage
-# from langchain_core.prompts import ChatPromptTemplate
-# from langchain_core.prompts.chat import (
-#     ChatPromptTemplate,
-#     MessagesPlaceholder,
-#     SystemMessagePromptTemplate,
-#     HumanMessagePromptTemplate,
-#     AIMessagePromptTemplate,
-# )
-# from langchain_nvidia_ai_endpoints import NVIDIAEmbeddings
-# from langchain_nvidia_ai_endpoints import ChatNVIDIA
-# from langchain_groq import ChatGroq
-# import os 
-# from load_dotenv import load_dotenv
-# from langchain_core.tools import tool
-# from langchain_chroma import Chroma
-# from langchain_community.utilities import GoogleSerperAPIWrapper
-# import base64
-# from langchain_huggingface import HuggingFaceEmbeddings
-# from langchain_core.documents import Document
-# from langchain_text_splitters import RecursiveCharacterTextSplitter
-# from langgraph.graph import StateGraph, START, END
-# from langchain_community.document_loaders import PyPDFLoader
-# load_dotenv()
-# NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY")
-# GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-# SERPER_API_KEY = os.getenv("SERPER_API_KEY")
 
-# class BasicAgent(TypedDict):
-#     messages: Annotated[Sequence[BaseMessage], operator.add]
-#     state: str 
-#     context: Dict[str,str]
-
-
-# llm = ChatNVIDIA(
-#     model="google/gemma-4-31b-it", 
-#     api_key=NVIDIA_API_KEY
-# )
-# llm2=ChatGroq(
-#     model="openai/gpt-oss-20b", 
-#     api_key=GROQ_API_KEY
-# )
-# llm_vision=ChatGroq(
-#     model="meta-llama/llama-4-scout-17b-16e-instruct",
-#     api_key=GROQ_API_KEY,
-#     temp=0.2
-# )
-# def encode_image(image_path: str) -> str:
-#     """Helper function to read a local image and convert it to a base64 string."""
-#     with open(image_path, "rb") as image_file:
-#         return base64.b64encode(image_file.read()).decode('utf-8')
-
-# def get_comprehensive_image_info(image_path: str) -> str:
-#     """
-#     Analyzes a local image using LangChain and Groq's vision model.
-#     Returns a comprehensive structured breakdown of the image.
-#     """
-#     # 1. Verify the file exists
-#     if not os.path.exists(image_path):
-#         return f"Error: No image found at path '{image_path}'."
-
-#     # 2. Encode the image file
-#     base64_image = encode_image(image_path)
-
-#     # 3. Initialize the LangChain Groq model
-#     # Note: It automatically reads the GROQ_API_KEY from your environment variables
-  
-
-#     # 4. Define what "everything required" means
-#     master_prompt = (
-#         "Analyze this image comprehensively and provide a structured report covering the following sections:\n"
-#         "1. OVERALL DESCRIPTION: A detailed 2-3 sentence summary of what is happening or depicted.\n"
-#         "2. PRIMARY OBJECTS/ELEMENTS: A list of the key objects, people, or items visible.\n"
-#         "3. TEXT EXTRACTION (OCR): Transcribe any text, labels, logos, numbers, or handwriting exactly as it appears. If none, state 'None'.\n"
-#         "4. VISUAL METADATA: Describe the lighting, dominant colors, atmosphere, and setting."
-#     )
-
-#     # 5. Build the LangChain multi-modal message
-#     message = HumanMessage(
-#         content=[
-#             {"type": "text", "text": master_prompt},
-#             {
-#                 "type": "image_url",
-#                 "image_url": {
-#                     "url": f"data:image/jpeg;base64,{base64_image}",
-#                 },
-#             },
-#         ]
-#     )
-    
-#     # 6. Call the model and return the text
-#     try:
-#         response = llm_vision.invoke([message])
-#         return response.content
-#     except Exception as e:
-#         return f"Failed to analyze image. Details: {str(e)}"
-
-# @tool
-# def web_search(query:str)->str:
-#     """This tool performs a web search using the Google Serper API and returns the results."""
-#     search = GoogleSerperAPIWrapper()
-#     return search.run(query)
-
-# @tool
-# def graph_tool(query:str)->str:
-#     """This tool allows wotks to create code for doing analysis and making graphs using matplotlib ,pandas and numpy"""
-#     prompt=ChatPromptTemplate.from_messages([
-#         ("system", "You are a helpful assistant that creates Python code to analyze data and generate graphs using matplotlib, pandas, and numpy. You only provide the code without any explanations and please do not add any unnecessary things in the code."),
-#         ("human", query)
-#     ])
-#     response=llm2.invoke(prompt.format_messages())  
-#     return response.content
-
-# llm_with_tools=ChatGroq(
-#     model="openai/gpt-oss-20b",
-#     api_key=GROQ_API_KEY,
-#     tools=[web_search, graph_tool]
-# )
-
-# def rag(raw_documents:str):
-#     text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-#     docs = text_splitter.split_documents(raw_documents)
-
-#     embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-mpnet-base-v2")
-
-#     vectorstore = Chroma.from_documents(
-#     documents=docs,
-#     embedding=embeddings,
-# )
-#     return vectorstore 
-
-# def retrieve(query:str, vectorstore)->str:  
-#     relevant_docs = vectorstore.similarity_search(query, k=3)
-#     return ("\n\n".join([doc.page_content for doc in relevant_docs]))
-
-# def decision_agent(state:BasicAgent)->BasicAgent:
-#     prompt=ChatPromptTemplate.from_messages([
-#         ("system", "You are a helpful ai assistent that can answer questions, perform web searches and create code for data analysis and graph generation. You have access to two tools: web_search and graph_tool. web_search allows you to perform a web search using the Google Serper API and returns the results. graph_tool allows you to create code for doing analysis and making graphs using matplotlib ,pandas and numpy. You should use these tools when necessary to answer the user's question or complete the task at hand. You may also get images and pdf data, you can use them to get information and answer questions. Always try to use the tools when you think they can help you answer the question or complete the task better. Always try to use the information from the tools to answer the question or complete the task better."),
-#         ("human","Answer the user's query {state['message'] and use the image data and pdf data {state['context']['image_data']} and {state['context']['pdf_data']} if they exist and if they are necessary.")])
-    
-#     response=llm_with_tools.invoke(prompt.format_messages(state=state))
-#     return response.content[0]
-
-
-# graph=StateGraph(BasicAgent)
-
-# graph.add_node("Decison_agent", decision_agent)
-# graph.add_edge(START, "agent_node")
-# graph.add_edge("agent_node", END)
-
-
-    
-# image=input("Enter the path of image")
-# document=input("Enter the path of the document")
-# text=input("Enter you query")
-
-# loader = PyPDFLoader("path/to/your/document.pdf")
-
-# # Load the document
-# if document:
-#     loader = PyPDFLoader("path/to/your/document.pdf")
-#     docs = loader.load()
-#     rag=rag(docs[0].page_content)
-    
-# if image:
-#     image=encode_image(image)
-# input_message={
-#     'text':text,
-#     'document':retrieve(text, rag),
-#     'image':image
-# }
-# app=graph.invoke(input_message)
-# app.run()
 
 import os 
 import base64
@@ -453,6 +277,14 @@ def needs_live_information(query: str) -> bool:
         "price",
         "stock",
         "score",
+        "match",
+        "matches",
+        "fixture",
+        "fixtures",
+        "schedule",
+        "cricket",
+        "series",
+        "tournament",
         "election",
         "release",
         "available",
@@ -541,7 +373,13 @@ def build_search_queries(query: str) -> List[str]:
     year_resolved_query = re.sub(r"\bnext year\b", str(current_year + 1), year_resolved_query, flags=re.IGNORECASE)
     year_resolved_query = re.sub(r"\blast year\b", str(current_year - 1), year_resolved_query, flags=re.IGNORECASE)
     queries = [year_resolved_query]
-    if re.search(r"\b(weather|forecast|temperature)\b", query, re.IGNORECASE):
+    if re.search(r"\b(india|indian).*\b(cricket|match|matches|fixture|fixtures|schedule|series)\b|\b(cricket|match|matches|fixture|fixtures|schedule|series).*\b(india|indian)\b", query, re.IGNORECASE):
+        queries = [
+            f"India men's cricket schedule remaining international matches {current_year} BCCI",
+            f"site:bcci.tv international fixtures India cricket {current_year}",
+            f"site:icc-cricket.com India fixtures {current_year} cricket",
+        ]
+    elif re.search(r"\b(weather|forecast|temperature)\b", query, re.IGNORECASE):
         queries.append(f"{year_resolved_query} official current weather")
     elif re.search(r"\b(news|latest|recent|today|current)\b", query, re.IGNORECASE):
         queries.append(f"{year_resolved_query} latest news today")
@@ -661,6 +499,8 @@ def decision_agent(state: BasicAgent) -> Dict[str, Any]:
         "For current, latest, weather, date, time, factual comparison, source-sensitive, or research questions, ground the answer in the LIVE/SEARCH CONTEXT below. "
         "When search results are available, synthesize them into a clear answer and include source names or URLs for important factual claims. "
         "Do not invent facts, dates, prices, weather, or statistics that are not in the context. Do not reuse old dates from model memory. "
+        "For sports fixtures, schedules, prices, and availability, only use the LIVE/SEARCH CONTEXT; if exact dates are not present, say that clearly instead of guessing. "
+        "For India cricket schedules, prefer official BCCI/ICC source results and list only matches that are still upcoming relative to the current date. "
         "If live search is unavailable, clearly say what exact data you can verify and what you cannot verify, then answer only from stable knowledge if safe. "
         "Never output XML/HTML-style tool markup such as <search>, <search query=...>, <tool>, or any hidden action tags. "
         "Do not say that you are searching; simply answer from the provided LIVE/SEARCH CONTEXT. "
@@ -668,6 +508,8 @@ def decision_agent(state: BasicAgent) -> Dict[str, Any]:
         "Never expose implementation details, internal tool names, function names, framework names, or phrases like 'using the graph_tool function'. "
         "If the user refers to something 'above' but the needed details are not available in the current conversation or provided files, say briefly what is missing and ask for the specific values/data. "
         "When asking for missing details, do not add generic offers, long explanations, or tool references. "
+        "You are a text-first research/chat agent running inside an app that can chat, research, read uploaded PDFs/images, find relevant web images, and export reports/PPTs. "
+        "You do not generate or create new synthetic images. If the user asks for image generation, say clearly that this app is a text agent; it can find relevant web images, help write an image prompt, or analyze an uploaded image instead. "
         "You can answer questions, write code, create presentation content when asked, and produce calculations or charts when the user provides enough data. "
         "When document context is provided and the user asks to explain, summarize, or understand the report, give a complete in-chat explanation. "
         "Structure report explanations with: big picture, section-by-section explanation, key findings, important details, limitations, and what the user should take away. "
@@ -782,10 +624,6 @@ def run_research_agent(
     
     # Extract final conversational text content string from the final message
     return final_output_state["messages"][-1].content
-
-
-
-
 
 
 
