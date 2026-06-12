@@ -58,6 +58,7 @@ export default function Home() {
   const [isBooting, setIsBooting] = useState(true);
   const [isChatsLoading, setIsChatsLoading] = useState(false);
   const [loadingConversationId, setLoadingConversationId] = useState("");
+  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [error, setError] = useState("");
   const [copiedMessageIndex, setCopiedMessageIndex] = useState<number | null>(null);
   const [streamStatus, setStreamStatus] = useState("");
@@ -135,8 +136,14 @@ export default function Home() {
     writeCache(cacheKey(authUser.uid, `messages:${conversationId}`), nextMessages);
   }
 
+  async function handleSelectConversation(conversationId: string) {
+    setIsMobileSidebarOpen(false);
+    await loadConversation(conversationId);
+  }
+
   async function handleNewChat() {
     if (!authUser) return;
+    setIsMobileSidebarOpen(false);
     const conversationId = `local-${Date.now()}`;
     activeStorageConversationIdRef.current = "";
     setActiveConversationId(conversationId);
@@ -338,65 +345,40 @@ export default function Home() {
 
   return (
     <main className="flex h-screen overflow-hidden bg-[#f7f7f8] text-[#1f2328]">
-      <aside className="hidden h-screen w-72 shrink-0 flex-col overflow-hidden border-r border-black/10 bg-white md:flex">
-        <div className="border-b border-black/10 p-3">
-          <button
-            type="button"
-            onClick={handleNewChat}
-            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-left text-sm font-medium hover:bg-gray-50"
-          >
-            + New chat
-          </button>
-        </div>
-        <div className="flex-1 overflow-y-auto p-2">
-          {isChatsLoading && (
-            <p className="px-2 py-3 text-xs text-gray-500">{conversations.length ? "Refreshing chats..." : "Loading previous chats..."}</p>
-          )}
-          {!isChatsLoading && conversations.length === 0 ? (
-            <p className="px-2 py-4 text-xs text-gray-500">Your saved chats will appear here.</p>
-          ) : (
-            conversations.map((conversation) => (
-              <div key={conversation.id} className="group flex items-center gap-1">
-                <button
-                  type="button"
-                  onClick={() => loadConversation(conversation.id)}
-                  className={`min-w-0 flex-1 rounded-lg px-3 py-2 text-left text-sm ${
-                    activeConversationId === conversation.id ? "bg-gray-100 font-medium" : "hover:bg-gray-50"
-                  }`}
-                >
-                  <span className="block truncate">
-                    {loadingConversationId === conversation.id ? "Loading chat..." : conversation.title || "New chat"}
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleDeleteConversation(conversation.id)}
-                  className="rounded-md px-2 py-1 text-xs text-gray-400 opacity-0 hover:bg-red-50 hover:text-red-600 group-hover:opacity-100"
-                  aria-label="Delete chat"
-                >
-                  x
-                </button>
-              </div>
-            ))
-          )}
-        </div>
-        <div className="border-t border-black/10 p-3 text-xs">
-          <div className="mb-2 truncate font-medium">{profile?.name || authUser.email}</div>
-          <div className="flex gap-2">
-            <Link href="/profile" className="rounded-md border border-gray-300 px-2 py-1 hover:bg-gray-50">
-              Profile
-            </Link>
-            <button type="button" onClick={() => signOut(auth)} className="rounded-md border border-gray-300 px-2 py-1 hover:bg-gray-50">
-              Sign out
-            </button>
-          </div>
-        </div>
+      {isMobileSidebarOpen && (
+        <div className="fixed inset-0 z-40 bg-black/35 md:hidden" onClick={() => setIsMobileSidebarOpen(false)} />
+      )}
+      <aside
+        className={`fixed inset-y-0 left-0 z-50 flex h-dvh w-[86vw] max-w-80 shrink-0 flex-col overflow-hidden border-r border-black/10 bg-white shadow-xl transition-transform duration-200 md:static md:z-auto md:h-screen md:w-72 md:max-w-none md:translate-x-0 md:shadow-none ${
+          isMobileSidebarOpen ? "translate-x-0" : "-translate-x-full"
+        } md:flex`}
+      >
+        <SidebarContent
+          authEmail={authUser.email ?? ""}
+          profileName={profile?.name}
+          conversations={conversations}
+          activeConversationId={activeConversationId}
+          isChatsLoading={isChatsLoading}
+          loadingConversationId={loadingConversationId}
+          onNewChat={handleNewChat}
+          onSelectConversation={handleSelectConversation}
+          onDeleteConversation={handleDeleteConversation}
+          onClose={() => setIsMobileSidebarOpen(false)}
+        />
       </aside>
 
       <div className="flex h-screen min-w-0 flex-1 flex-col overflow-hidden">
         <header className="shrink-0 border-b border-black/10 bg-white/80 backdrop-blur">
           <div className="mx-auto flex h-14 max-w-4xl items-center justify-between px-4">
             <div className="flex min-w-0 items-center gap-3">
+              <button
+                type="button"
+                onClick={() => setIsMobileSidebarOpen(true)}
+                className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-gray-300 bg-white text-lg md:hidden"
+                aria-label="Open chat history"
+              >
+                ☰
+              </button>
               <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-black text-sm font-semibold text-white">AI</div>
               <div className="min-w-0">
                 <h1 className="truncate text-sm font-semibold">Research Chatbot</h1>
@@ -416,7 +398,7 @@ export default function Home() {
           </div>
         </header>
 
-        <section className="mx-auto flex w-full max-w-4xl flex-1 flex-col overflow-y-auto px-4">
+        <section className="mx-auto flex w-full max-w-4xl flex-1 flex-col overflow-y-auto px-3 sm:px-4">
           {loadingConversationId && messages.length === 0 ? (
             <div className="flex flex-1 flex-col items-center justify-center text-center">
               <h2 className="text-2xl font-semibold tracking-tight">Loading this chat...</h2>
@@ -424,7 +406,7 @@ export default function Home() {
             </div>
           ) : messages.length === 0 ? (
             <div className="flex flex-1 flex-col items-center justify-center text-center">
-              <h2 className="text-3xl font-semibold tracking-tight">How can I help you today?</h2>
+              <h2 className="px-3 text-2xl font-semibold tracking-tight sm:text-3xl">How can I help you today?</h2>
               <p className="mt-3 max-w-md text-sm text-gray-500">Your chats, profile details, memories, and project context are saved to your account.</p>
             </div>
           ) : (
@@ -447,7 +429,7 @@ export default function Home() {
           )}
         </section>
 
-        <footer className="shrink-0 border-t border-black/10 bg-[#f7f7f8]/90 px-4 py-4 backdrop-blur">
+        <footer className="shrink-0 border-t border-black/10 bg-[#f7f7f8]/90 px-3 py-3 backdrop-blur sm:px-4 sm:py-4">
           <form onSubmit={handleSubmit} className="mx-auto max-w-4xl">
             {files.length > 0 && (
               <div className="mb-2 flex flex-wrap gap-2">
@@ -498,11 +480,100 @@ export default function Home() {
                 ↑
               </button>
             </div>
-            <p className="mt-2 text-center text-xs text-gray-400">Research Chatbot can make mistakes. Check important outputs.</p>
+          <p className="mt-2 hidden text-center text-xs text-gray-400 sm:block">Research Chatbot can make mistakes. Check important outputs.</p>
           </form>
         </footer>
       </div>
     </main>
+  );
+}
+
+function SidebarContent({
+  authEmail,
+  profileName,
+  conversations,
+  activeConversationId,
+  isChatsLoading,
+  loadingConversationId,
+  onNewChat,
+  onSelectConversation,
+  onDeleteConversation,
+  onClose
+}: {
+  authEmail: string;
+  profileName?: string;
+  conversations: StoredConversation[];
+  activeConversationId: string;
+  isChatsLoading: boolean;
+  loadingConversationId: string;
+  onNewChat: () => void;
+  onSelectConversation: (conversationId: string) => void;
+  onDeleteConversation: (conversationId: string) => void;
+  onClose: () => void;
+}) {
+  return (
+    <>
+      <div className="flex items-center gap-2 border-b border-black/10 p-3">
+        <button
+          type="button"
+          onClick={onNewChat}
+          className="min-w-0 flex-1 rounded-lg border border-gray-300 px-3 py-2 text-left text-sm font-medium hover:bg-gray-50"
+        >
+          + New chat
+        </button>
+        <button
+          type="button"
+          onClick={onClose}
+          className="flex h-9 w-9 items-center justify-center rounded-lg border border-gray-300 text-sm md:hidden"
+          aria-label="Close chat history"
+        >
+          x
+        </button>
+      </div>
+      <div className="flex-1 overflow-y-auto p-2">
+        {isChatsLoading && (
+          <p className="px-2 py-3 text-xs text-gray-500">{conversations.length ? "Refreshing chats..." : "Loading previous chats..."}</p>
+        )}
+        {!isChatsLoading && conversations.length === 0 ? (
+          <p className="px-2 py-4 text-xs text-gray-500">Your saved chats will appear here.</p>
+        ) : (
+          conversations.map((conversation) => (
+            <div key={conversation.id} className="group flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => onSelectConversation(conversation.id)}
+                className={`min-w-0 flex-1 rounded-lg px-3 py-2 text-left text-sm ${
+                  activeConversationId === conversation.id ? "bg-gray-100 font-medium" : "hover:bg-gray-50"
+                }`}
+              >
+                <span className="block truncate">
+                  {loadingConversationId === conversation.id ? "Loading chat..." : conversation.title || "New chat"}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => onDeleteConversation(conversation.id)}
+                className="rounded-md px-2 py-1 text-xs text-gray-500 hover:bg-red-50 hover:text-red-600 md:opacity-0 md:group-hover:opacity-100"
+                aria-label="Delete chat"
+              >
+                x
+              </button>
+            </div>
+          ))
+        )}
+      </div>
+      <div className="border-t border-black/10 p-3 text-xs">
+        <div className="mb-2 truncate font-medium">{profileName || authEmail}</div>
+        <div className="flex gap-2">
+          <Link href="/profile" onClick={onClose} className="rounded-md border border-gray-300 px-2 py-1 hover:bg-gray-50">
+            Profile
+          </Link>
+          <button type="button" onClick={() => signOut(auth)} className="rounded-md border border-gray-300 px-2 py-1 hover:bg-gray-50">
+            Sign out
+          </button>
+        </div>
+      </div>
+    </>
   );
 }
 
@@ -693,7 +764,7 @@ function MessageBubble({
   const isUser = message.role === "user";
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
-      <div className={`max-w-[82%] rounded-3xl px-4 py-3 text-sm leading-7 ${isUser ? "bg-black text-white" : "bg-transparent text-gray-900"}`}>
+      <div className={`max-w-[92%] rounded-3xl px-4 py-3 text-sm leading-7 sm:max-w-[82%] ${isUser ? "bg-black text-white" : "bg-transparent text-gray-900"}`}>
         <MarkdownMessage content={message.content} />
         {message.artifacts && message.artifacts.length > 0 && (
           <div className="mt-3 flex flex-wrap gap-2">
@@ -725,7 +796,7 @@ function ArtifactView({ artifact }: { artifact: Artifact }) {
   if (isImage) {
     return (
       <div className="w-full space-y-2">
-        <img src={url} alt={artifact.name} className="max-h-[420px] rounded-2xl border border-gray-200 shadow-sm" />
+        <img src={url} alt={artifact.name} className="max-h-[320px] max-w-full rounded-2xl border border-gray-200 shadow-sm sm:max-h-[420px]" />
         <a
           href={url}
           target="_blank"
