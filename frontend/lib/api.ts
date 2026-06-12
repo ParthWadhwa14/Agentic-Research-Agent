@@ -16,10 +16,12 @@ export type AgentResponse = {
   artifacts: Artifact[];
 };
 
-export const API_BASE =
+const rawApiBase =
   process.env.NEXT_PUBLIC_BACKEND_URL ??
   process.env.NEXT_PUBLIC_API_BASE ??
   "http://localhost:8000";
+
+export const API_BASE = rawApiBase.replace(/\/$/, "");
 
 export async function runAgentRequest(input: {
   query: string;
