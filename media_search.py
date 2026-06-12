@@ -61,6 +61,12 @@ def download_image(url: str, save_path: Path) -> Optional[str]:
         try:
             with Image.open(save_path) as image:
                 image.verify()
+            with Image.open(save_path) as image:
+                if image.format not in {"BMP", "GIF", "JPEG", "PNG", "TIFF"}:
+                    converted_path = save_path.with_suffix(".png")
+                    image.convert("RGB").save(converted_path, format="PNG")
+                    save_path.unlink(missing_ok=True)
+                    return str(converted_path)
         except Exception:
             save_path.unlink(missing_ok=True)
             return None

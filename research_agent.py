@@ -21,6 +21,7 @@ from langgraph.graph import END, START, StateGraph
 
 from memory_system import ContextBuilder, InMemoryMemoryStore, MemoryRecord, MemoryStore
 from media_search import collect_slide_images
+from data_analysis_agent import analyze_data_file as run_local_data_analysis
 
 load_dotenv()
 
@@ -561,6 +562,22 @@ def _normalize_slide_bullets(content: Any) -> List[str]:
     return [_clean_slide_text(content, 175)] if content else []
 
 
+def _ppt_safe_image_path(image_path: str) -> str:
+    """Converts image formats unsupported by python-pptx, such as WebP, into PNG."""
+    try:
+        from PIL import Image
+
+        source = Path(image_path)
+        with Image.open(source) as image:
+            if image.format in {"BMP", "GIF", "JPEG", "PNG", "TIFF", "WMF"}:
+                return str(source)
+            converted = source.with_suffix(".png")
+            image.convert("RGB").save(converted, format="PNG")
+            return str(converted)
+    except Exception:
+        return image_path
+
+
 def generate_ppt_from_report(
     report: str,
     query: str,
@@ -746,7 +763,7 @@ def generate_ppt_from_report(
             add_textbox(slide, "Source list captured from the generated report. Verify important claims before publication.", 0.92, 6.21, 10.95, 0.38, 11, muted)
 
         if has_chart:
-            image_path = chart_paths[chart_index]
+            image_path = _ppt_safe_image_path(chart_paths[chart_index])
             add_card(slide, 8.25, 2.02, 4.35, 3.9)
             slide.shapes.add_picture(image_path, Inches(8.45), Inches(2.3), width=Inches(3.95))
             add_textbox(slide, "Supporting visual", 8.46, 5.55, 3.95, 0.25, 9, muted, align=PP_ALIGN.CENTER)
@@ -781,7 +798,7 @@ def input_preprocessor_node(state: ResearchState) -> Dict[str, Any]:
         elif suffix in IMAGE_EXTENSIONS:
             sections.append(f"\n[IMAGE INPUT: {file_path}]\n{analyze_image(file_path)}")
         elif suffix in DATA_EXTENSIONS:
-            analysis = analyze_data_file(file_path)
+            analysis = run_local_data_analysis(file_path, query=state["query"])
             sections.append(f"\n[DATA ANALYSIS INPUT: {file_path}]\n{analysis['summary']}")
             chart_paths.extend(analysis.get("chart_paths", []))
         else:
@@ -814,6 +831,7 @@ def planner_node(state: ResearchState) -> Dict[str, Any]:
     {state.get('input_context', '')}
 
     Requirements:
+    - If DATA ANALYSIS INPUT is present, make uploaded dataset analysis the primary evidence and only use external search when the user explicitly asks for external/current context.
     - Search across official sources, primary sources, reputable news/research sites, and high-signal secondary sources.
     - Identify what quantitative data, calculations, comparisons, timelines, prices, market sizes, scores, schedules, or estimates are needed.
     - Plan at least one numerical/analytical pass whenever the topic has measurable facts.
@@ -828,6 +846,18 @@ def planner_node(state: ResearchState) -> Dict[str, Any]:
 def search_and_summarize_node(state: ResearchState) -> Dict[str, Any]:
     """An autonomous search agent that routes queries between Google and Wikipedia."""
     print(f"--- 🔍 INTELLIGENT SEARCH AGENT (Iteration {state['iteration'] + 1}) ---")
+
+    has_uploaded_data = "[DATA ANALYSIS INPUT:" in state.get("input_context", "")
+    external_request = bool(re.search(r"\b(web|internet|latest|current|today|source|sources|cite|citation|external|market|news)\b", state["query"], re.IGNORECASE))
+    if has_uploaded_data and not external_request:
+        return {
+            "research_data": (
+                f"\n\n--- Iteration {state['iteration'] + 1} Local Dataset Findings ---\n"
+                "External web search skipped because uploaded data analysis is available and the user did not ask for external/current sources. "
+                "Use the DATA ANALYSIS INPUT, generated charts, descriptive statistics, correlations, outliers, and limitations as the primary evidence."
+            ),
+            "iteration": state["iteration"] + 1,
+        }
 
     search_target = state["current_gaps"] if state["iteration"] > 0 else state["plan"]
     routing_prompt = f"""
@@ -984,6 +1014,12 @@ def ppt_export_node(state: ResearchState) -> Dict[str, Any]:
 # ==========================================
 def should_continue_research(state: ResearchState) -> str:
     """Decides whether to loop back to search or proceed to formatting."""
+    has_uploaded_data = "[DATA ANALYSIS INPUT:" in state.get("input_context", "")
+    external_request = bool(re.search(r"\b(web|internet|latest|current|today|source|sources|cite|citation|external|market|news)\b", state["query"], re.IGNORECASE))
+    if has_uploaded_data and not external_request and state["iteration"] >= 1:
+        print("--- 📊 LOCAL DATA ANALYSIS COMPLETE: Proceeding to format ---")
+        return "format"
+
     if state["iteration"] >= 4:
         print("--- 🛑 ITERATION CAP REACHED: Proceeding to format ---")
         return "format"

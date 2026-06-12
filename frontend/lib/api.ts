@@ -5,6 +5,7 @@ export type Artifact = {
   type: string;
   name: string;
   url: string;
+  provenance?: string;
 };
 
 export type AgentResponse = {
@@ -24,12 +25,16 @@ export async function runAgentRequest(input: {
   files: File[];
   recentMessages?: string[];
   conversationSummary?: string;
+  longTermContext?: string;
+  artifactContext?: string;
 }): Promise<AgentResponse> {
   const formData = new FormData();
   formData.append("query", input.query);
   formData.append("mode", input.mode);
   formData.append("format_type", input.format ?? "auto");
   formData.append("conversation_summary", input.conversationSummary ?? "");
+  formData.append("long_term_context", input.longTermContext ?? "");
+  formData.append("artifact_context", input.artifactContext ?? "");
   formData.append("recent_messages", JSON.stringify(input.recentMessages ?? []));
   input.files.forEach((file) => formData.append("files", file));
 
@@ -54,11 +59,13 @@ export async function runAgentStream(
     files: File[];
     recentMessages?: string[];
     conversationSummary?: string;
+    longTermContext?: string;
+    artifactContext?: string;
   },
   handlers: {
     onStatus?: (message: string) => void;
     onChunk?: (content: string) => void;
-    onFinal?: (response: Pick<AgentResponse, "answer" | "artifacts">) => void;
+    onFinal?: (response: Pick<AgentResponse, "answer" | "artifacts">) => void | Promise<void>;
     onError?: (message: string) => void;
   }
 ): Promise<void> {
@@ -67,6 +74,8 @@ export async function runAgentStream(
   formData.append("mode", input.mode);
   formData.append("format_type", input.format ?? "auto");
   formData.append("conversation_summary", input.conversationSummary ?? "");
+  formData.append("long_term_context", input.longTermContext ?? "");
+  formData.append("artifact_context", input.artifactContext ?? "");
   formData.append("recent_messages", JSON.stringify(input.recentMessages ?? []));
   input.files.forEach((file) => formData.append("files", file));
 
@@ -98,7 +107,7 @@ export async function runAgentStream(
       const payload = JSON.parse(dataLine.slice(6));
       if (payload.type === "status") handlers.onStatus?.(payload.message);
       if (payload.type === "chunk") handlers.onChunk?.(payload.content);
-      if (payload.type === "final") handlers.onFinal?.({ answer: payload.answer, artifacts: payload.artifacts ?? [] });
+      if (payload.type === "final") await handlers.onFinal?.({ answer: payload.answer, artifacts: payload.artifacts ?? [] });
       if (payload.type === "error") handlers.onError?.(payload.message);
     }
   }
