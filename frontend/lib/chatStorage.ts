@@ -9,7 +9,6 @@ import {
   serverTimestamp,
   setDoc,
   updateDoc,
-  where,
   writeBatch
 } from "firebase/firestore";
 import { updateProfile, type User } from "firebase/auth";
@@ -83,7 +82,7 @@ export async function getUserProfile(userId: string): Promise<StoredUser | null>
 }
 
 export async function createConversation(userId: string, title = "New chat") {
-  const ref = await addDoc(collection(db, "conversations"), {
+  const ref = await addDoc(collection(db, "users", userId, "chats"), {
     user_id: userId,
     title,
     summary: "",
@@ -94,41 +93,41 @@ export async function createConversation(userId: string, title = "New chat") {
 }
 
 export async function listConversations(userId: string): Promise<StoredConversation[]> {
-  const q = query(collection(db, "conversations"), where("user_id", "==", userId));
-  const snapshot = await getDocs(q);
+  const snapshot = await getDocs(collection(db, "users", userId, "chats"));
   return snapshot.docs
     .map((item) => ({ id: item.id, ...(item.data() as Omit<StoredConversation, "id">) }))
     .sort((a, b) => timestampMillis(b.updated_at) - timestampMillis(a.updated_at));
 }
 
-export async function getConversation(conversationId: string): Promise<StoredConversation | null> {
-  const snapshot = await getDoc(doc(db, "conversations", conversationId));
+export async function getConversation(userId: string, conversationId: string): Promise<StoredConversation | null> {
+  const snapshot = await getDoc(doc(db, "users", userId, "chats", conversationId));
   if (!snapshot.exists()) return null;
   return { id: snapshot.id, ...(snapshot.data() as Omit<StoredConversation, "id">) };
 }
 
-export async function updateConversationMeta(conversationId: string, data: Partial<Pick<StoredConversation, "title" | "summary">>) {
-  await updateDoc(doc(db, "conversations", conversationId), {
+export async function updateConversationMeta(userId: string, conversationId: string, data: Partial<Pick<StoredConversation, "title" | "summary">>) {
+  await updateDoc(doc(db, "users", userId, "chats", conversationId), {
     ...data,
     updated_at: serverTimestamp()
   });
 }
 
-export async function deleteConversation(conversationId: string) {
-  const messagesSnapshot = await getDocs(query(collection(db, "messages"), where("conversation_id", "==", conversationId)));
+export async function deleteConversation(userId: string, conversationId: string) {
+  const messagesSnapshot = await getDocs(collection(db, "users", userId, "chats", conversationId, "messages"));
   const batch = writeBatch(db);
   messagesSnapshot.docs.forEach((messageDoc) => batch.delete(messageDoc.ref));
-  batch.delete(doc(db, "conversations", conversationId));
+  batch.delete(doc(db, "users", userId, "chats", conversationId));
   await batch.commit();
 }
 
 export async function addMessage(
+  userId: string,
   conversationId: string,
   role: StoredMessage["role"],
   content: string,
   artifacts?: Artifact[]
 ) {
-  await addDoc(collection(db, "messages"), {
+  await addDoc(collection(db, "users", userId, "chats", conversationId, "messages"), {
     conversation_id: conversationId,
     role,
     content,
@@ -137,17 +136,15 @@ export async function addMessage(
   });
 }
 
-export async function listMessages(conversationId: string): Promise<StoredMessage[]> {
-  const q = query(collection(db, "messages"), where("conversation_id", "==", conversationId));
-  const snapshot = await getDocs(q);
+export async function listMessages(userId: string, conversationId: string): Promise<StoredMessage[]> {
+  const snapshot = await getDocs(collection(db, "users", userId, "chats", conversationId, "messages"));
   return snapshot.docs
     .map((item) => ({ id: item.id, ...(item.data() as Omit<StoredMessage, "id">) }))
     .sort((a, b) => timestampMillis(a.created_at) - timestampMillis(b.created_at));
 }
 
 export async function listMemories(userId: string): Promise<StoredMemory[]> {
-  const q = query(collection(db, "memories"), where("user_id", "==", userId));
-  const snapshot = await getDocs(q);
+  const snapshot = await getDocs(collection(db, "users", userId, "memories"));
   return snapshot.docs
     .map((item) => ({ id: item.id, ...(item.data() as Omit<StoredMemory, "id">) }))
     .sort((a, b) => b.importance - a.importance)
@@ -155,8 +152,7 @@ export async function listMemories(userId: string): Promise<StoredMemory[]> {
 }
 
 export async function listProjects(userId: string): Promise<StoredProject[]> {
-  const q = query(collection(db, "projects"), where("user_id", "==", userId));
-  const snapshot = await getDocs(q);
+  const snapshot = await getDocs(collection(db, "users", userId, "projects"));
   return snapshot.docs
     .map((item) => ({ id: item.id, ...(item.data() as Omit<StoredProject, "id">) }))
     .sort((a, b) => timestampMillis(b.updated_at) - timestampMillis(a.updated_at))
@@ -166,7 +162,7 @@ export async function listProjects(userId: string): Promise<StoredProject[]> {
 export async function saveExtractedMemory(userId: string, conversationId: string, text: string, category: string, importance = 0.7) {
   const cleanText = text.trim();
   if (!cleanText) return;
-  await addDoc(collection(db, "memories"), {
+  await addDoc(collection(db, "users", userId, "memories"), {
     user_id: userId,
     text: cleanText,
     category,
@@ -177,7 +173,7 @@ export async function saveExtractedMemory(userId: string, conversationId: string
 }
 
 export async function saveProjectState(userId: string, data: Omit<StoredProject, "id" | "user_id">) {
-  await addDoc(collection(db, "projects"), {
+  await addDoc(collection(db, "users", userId, "projects"), {
     user_id: userId,
     ...data,
     created_at: serverTimestamp(),

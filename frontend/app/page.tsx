@@ -122,8 +122,8 @@ export default function Home() {
     }
     setLoadingConversationId(conversationId);
     const [conversation, storedMessages] = await Promise.all([
-      safeStorage(() => getConversation(conversationId), null),
-      safeStorage(() => listMessages(conversationId), [])
+      safeStorage(() => getConversation(authUser.uid, conversationId), null),
+      safeStorage(() => listMessages(authUser.uid, conversationId), [])
     ]);
     setLoadingConversationId("");
     setActiveSummary(conversation?.summary ?? "");
@@ -179,7 +179,7 @@ export default function Home() {
     });
     removeCache(cacheKey(authUser.uid, `messages:${conversationId}`));
     if (!conversationId.startsWith("local-")) {
-      void safeStorage(() => deleteConversation(conversationId), undefined);
+      void safeStorage(() => deleteConversation(authUser.uid, conversationId), undefined);
     }
     if (conversationId === activeConversationId) {
       const nextId = nextConversations[0]?.id ?? "";
@@ -731,9 +731,9 @@ async function persistChatTurn(input: {
         ? await withTimeout(createConversation(input.userId, makeTitle(input.userQuery)), 5000)
         : input.conversationId);
 
-    await withTimeout(addMessage(savedConversationId, "user", input.userQuery), 5000);
-    await withTimeout(addMessage(savedConversationId, "assistant", input.assistantAnswer, input.artifacts), 5000);
-    await withTimeout(updateConversationMeta(savedConversationId, {
+    await withTimeout(addMessage(input.userId, savedConversationId, "user", input.userQuery), 5000);
+    await withTimeout(addMessage(input.userId, savedConversationId, "assistant", input.assistantAnswer, input.artifacts), 5000);
+    await withTimeout(updateConversationMeta(input.userId, savedConversationId, {
       summary: makeConversationSummary(input.previousSummary, input.userQuery, input.assistantAnswer),
       ...(input.isFirstMessage ? { title: makeTitle(input.userQuery) } : {})
     }), 5000);
