@@ -6,7 +6,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { GoogleAuthProvider, onAuthStateChanged, signInWithEmailAndPassword, signInWithPopup, signOut, type User } from "firebase/auth";
 import { AgentMode, Artifact, artifactUrl, runAgentStream } from "../lib/api";
-import { auth } from "../lib/firebase";
+import { auth, authReady } from "../lib/firebase";
 import { friendlyFirebaseError } from "../lib/firebaseErrors";
 import {
   addMessage,
@@ -517,6 +517,7 @@ function LoginScreen() {
     setError("");
     setIsLoading(true);
     try {
+      await authReady;
       await signInWithEmailAndPassword(auth, email, password);
     } catch (loginError) {
       console.error(loginError);
@@ -530,8 +531,9 @@ function LoginScreen() {
     setError("");
     setIsLoading(true);
     try {
+      await authReady;
       const credential = await signInWithPopup(auth, new GoogleAuthProvider());
-      await upsertUserProfile(credential.user);
+      void upsertUserProfile(credential.user).catch((profileError) => console.error(profileError));
     } catch (loginError) {
       console.error(loginError);
       setError(friendlyFirebaseError(loginError));

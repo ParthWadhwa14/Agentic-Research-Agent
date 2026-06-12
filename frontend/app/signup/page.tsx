@@ -4,7 +4,7 @@ import { FormEvent, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createUserWithEmailAndPassword, GoogleAuthProvider, signInWithPopup } from "firebase/auth";
-import { auth } from "../../lib/firebase";
+import { auth, authReady } from "../../lib/firebase";
 import { friendlyFirebaseError } from "../../lib/firebaseErrors";
 import { upsertUserProfile } from "../../lib/chatStorage";
 
@@ -21,17 +21,16 @@ export default function SignupPage() {
     setError("");
     setIsLoading(true);
     try {
+      await authReady;
       const credential = await createUserWithEmailAndPassword(auth, email, password);
-      try {
-        await upsertUserProfile(credential.user, name);
-      } catch (profileError) {
-        console.error(profileError);
-      }
-      router.push("/");
+      void upsertUserProfile(credential.user, name).catch((profileError) => console.error(profileError));
+      router.replace("/");
+      window.setTimeout(() => {
+        if (window.location.pathname !== "/") window.location.assign("/");
+      }, 800);
     } catch (signupError) {
       console.error(signupError);
       setError(friendlyFirebaseError(signupError));
-    } finally {
       setIsLoading(false);
     }
   }
@@ -40,17 +39,16 @@ export default function SignupPage() {
     setError("");
     setIsLoading(true);
     try {
+      await authReady;
       const credential = await signInWithPopup(auth, new GoogleAuthProvider());
-      try {
-        await upsertUserProfile(credential.user, name || credential.user.displayName || undefined);
-      } catch (profileError) {
-        console.error(profileError);
-      }
-      router.push("/");
+      void upsertUserProfile(credential.user, name || credential.user.displayName || undefined).catch((profileError) => console.error(profileError));
+      router.replace("/");
+      window.setTimeout(() => {
+        if (window.location.pathname !== "/") window.location.assign("/");
+      }, 800);
     } catch (signupError) {
       console.error(signupError);
       setError(friendlyFirebaseError(signupError));
-    } finally {
       setIsLoading(false);
     }
   }
