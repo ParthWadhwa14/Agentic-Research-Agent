@@ -47,13 +47,13 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 # Using valid, high-performance production endpoints
 llm_vision = ChatGroq(
-    model="meta-llama/llama-4-scout-17b-16e-instruct",
+    model="openai/gpt-oss-120b",
     api_key=GROQ_API_KEY,
     temperature=0.2
 )
 
 llm_code = ChatGroq(
-    model="meta-llama/llama-4-scout-17b-16e-instruct", 
+    model="openai/gpt-oss-120b", 
     api_key=GROQ_API_KEY
 )
 

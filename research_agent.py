@@ -47,8 +47,8 @@ class ResearchState(TypedDict):
 # ==========================================
 # 2. INITIALIZE MODELS & TOOLS
 # ==========================================
-llm = ChatGroq(model="meta-llama/llama-4-scout-17b-16e-instruct", temperature=0.2)
-llm_vision = ChatGroq(model="meta-llama/llama-4-scout-17b-16e-instruct", temperature=0.2)
+llm = ChatGroq(model="openai/gpt-oss-120b", temperature=0.2)
+llm_vision = ChatGroq(model="openai/gpt-oss-120b", temperature=0.2)
 web_search_tool = GoogleSerperAPIWrapper()
 wiki_search_tool = WikipediaQueryRun(api_wrapper=WikipediaAPIWrapper())
 

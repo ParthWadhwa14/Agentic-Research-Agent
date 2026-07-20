@@ -199,7 +199,7 @@ def llm_output_decision(query: str, requested_format: str, recent_messages: Opti
 
         recent_context = "\n".join(recent_messages or [])[-2500:]
         router = ChatGroq(
-            model="meta-llama/llama-4-scout-17b-16e-instruct",
+            model="openai/gpt-oss-120b",
             api_key=os.getenv("GROQ_API_KEY"),
             temperature=0,
         )
